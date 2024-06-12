@@ -84,3 +84,12 @@ func (i *Instance) GetRowSegment(key []byte) (*RowSegment, error) {
 		Value: data,
 	}, err
 }
+
+func (i *Instance) InsertTable(t *Table) error {
+	err := i.Db.Put([]byte(string(t.Name)), t.Serialize())
+	if err != nil {
+		return err
+	}
+
+	return nil
+}

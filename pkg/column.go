@@ -25,6 +25,7 @@ func (c *Column) New(n CString, k byte) *Column {
 	return c
 }
 
+// TODO: Make static allocation not dynamic
 func (c *Column) Serialize() []byte {
 	data := []byte{}
 	d := make([]byte, 2)

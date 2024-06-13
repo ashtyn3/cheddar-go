@@ -16,11 +16,13 @@ type Column struct {
 	IsPrimary  CBool
 	Kind       byte
 	Name       CString
+	pool       *pool
 }
 
-func (c *Column) New(n CString, k byte) *Column {
+func (c *Column) New(p *pool, n CString, k byte) *Column {
 	c.Name = n
 	c.Kind = k
+	c.pool = p
 
 	return c
 }
@@ -48,19 +50,20 @@ func (c *Column) Serialize() []byte {
 
 	return data
 }
-func (c *Column) Deserialize(r *bytes.Buffer) *Column {
+func (c *Column) Deserialize(p *pool, r *bytes.Buffer) *Column {
+	c.pool = p
 	idx_bytes := make([]byte, 2)
 	r.Read(idx_bytes)
 	c.Index = binary.LittleEndian.Uint16(idx_bytes)
-	prim, _ := new(CBool).Deserialize(r)
+	prim, _ := new(CBool).Deserialize(c.pool, r)
 	c.IsPrimary = prim
 
-	NotNull, _ := new(CBool).Deserialize(r)
+	NotNull, _ := new(CBool).Deserialize(c.pool, r)
 	c.NotNull = NotNull
 
 	k, _ := r.ReadByte()
 	c.Kind = k
-	name, _ := new(CString).Deserialize(r)
+	name, _ := new(CString).Deserialize(c.pool, r)
 	c.Name = name
 
 	hasDef, _ := r.ReadByte()
@@ -68,10 +71,10 @@ func (c *Column) Deserialize(r *bytes.Buffer) *Column {
 	if hasDef == 1 {
 		c.Default = reflect.New(T(c.Kind)).Interface().(Serial)
 	}
-	max, _ := new(CInt64).Deserialize(r)
+	max, _ := new(CInt64).Deserialize(c.pool, r)
 	c.MaxSize = max
 
-	min, _ := new(CInt64).Deserialize(r)
+	min, _ := new(CInt64).Deserialize(c.pool, r)
 	c.MinSize = min
 	return c
 }

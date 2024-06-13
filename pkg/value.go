@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"strconv"
 
-	"go.uber.org/zap"
+	"github.com/rs/zerolog/log"
 )
 
 type CCompatible interface {
@@ -78,23 +78,23 @@ func ParseKeyBytes(r []byte) CKey {
 		Id:    parts[2],
 	}
 }
-func ParseHeadBytes(r *bytes.Buffer) Head {
+func ParseHeadBytes(p *pool, r *bytes.Buffer) Head {
 	bs, _ := r.ReadBytes(byte('|'))
 	bs = bytes.Trim(bs, "|")
-	headBuffer := bytes.NewBuffer(bs)
+	headBuffer := p.newBuffer(bs)
 
 	k, _ := headBuffer.ReadByte()
 
+	p.p.Put(headBuffer)
 	num := binary.LittleEndian.Uint64(headBuffer.Bytes())
 	return Head{Kind: int8(k), Size: int64(num)}
 }
-func (cs *CString) Deserialize(r *bytes.Buffer) (CString, Head) {
-
-	h := ParseHeadBytes(r)
+func (cs *CString) Deserialize(p *pool, r *bytes.Buffer) (CString, Head) {
+	h := ParseHeadBytes(p, r)
 	body := make([]byte, h.Size)
 	n, err := r.Read(body)
 	if err != nil {
-		zap.L().Error("could not deserialize", zap.Error(err))
+		log.Error().Err(err).Msg("could not deserialize")
 	}
 
 	return CString(string(body)), Head{
@@ -110,8 +110,8 @@ func (cs CInt64) Serialize() []byte {
 	return FullSerial(INT64, b)
 }
 
-func (cs CInt64) Deserialize(r *bytes.Buffer) (CInt64, Head) {
-	h := ParseHeadBytes(r)
+func (cs CInt64) Deserialize(p *pool, r *bytes.Buffer) (CInt64, Head) {
+	h := ParseHeadBytes(p, r)
 	body := make([]byte, h.Size)
 	r.Read(body)
 
@@ -131,8 +131,8 @@ func (cs CFloat64) Serialize() []byte {
 	return FullSerial(FLOAT64, b)
 }
 
-func (cs CFloat64) Deserialize(r *bytes.Buffer) (CFloat64, Head) {
-	h := ParseHeadBytes(r)
+func (cs CFloat64) Deserialize(p *pool, r *bytes.Buffer) (CFloat64, Head) {
+	h := ParseHeadBytes(p, r)
 	body := make([]byte, h.Size)
 	r.Read(body)
 
@@ -151,8 +151,8 @@ func (cs CBool) Serialize() []byte {
 	return FullSerial(BOOL, []byte{0})
 }
 
-func (cs CBool) Deserialize(r *bytes.Buffer) (CBool, Head) {
-	ParseHeadBytes(r)
+func (cs CBool) Deserialize(p *pool, r *bytes.Buffer) (CBool, Head) {
+	ParseHeadBytes(p, r)
 	b, _ := r.ReadByte()
 	h := Head{
 		Size: 1,
@@ -186,7 +186,7 @@ func V(v interface{}) Serial {
 		}
 	default:
 		{
-			zap.L().Fatal("broken type")
+			log.Fatal().Msg("broken type")
 		}
 	}
 	return nil

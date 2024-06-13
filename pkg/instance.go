@@ -1,46 +1,65 @@
 package cheddar
 
 import (
-	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
+	"github.com/cespare/xxhash/v2"
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/lotusdblabs/lotusdb/v2"
 	"github.com/rs/xid"
-	"go.uber.org/zap"
+	"github.com/rs/zerolog/log"
 )
 
-type Instance struct {
-	path string
-	Db   *lotusdb.DB
+type Cacheable struct {
+	Id string
 }
 
-func (i *Instance) New(p string) {
+type Instance struct {
+	path  string
+	Db    *lotusdb.DB
+	cache *lru.TwoQueueCache[uint64, Cacheable]
+	Pool  *pool
+}
+
+var (
+	NoColFound = errors.New("Could not find column by name")
+)
+
+func (i *Instance) New(p string) *Instance {
 	_, err := os.Stat(p)
 	i.path = p
 	ops := lotusdb.DefaultOptions
 	ops.DirPath = i.path
 	d, err := lotusdb.Open(ops)
 	if err != nil {
-		zap.L().Error("Bad open", zap.Error(err))
+		log.Fatal().Err(err).Msg("Bad open")
 	}
 	if os.IsNotExist(err) {
 		p, _ := filepath.Abs(p)
-		zap.L().Info("Created db", zap.String("path", p))
+		log.Info().Str("path", p).Msg("Created db")
 	}
+	c, err := lru.New2Q[uint64, Cacheable](500)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Cannot allocate cache")
+	}
+	i.cache = c
 	i.Db = d
+	i.Pool = new(pool).New()
+	return i
 }
+
 func (i *Instance) Trace() {
 	iter, err := i.Db.NewIterator(lotusdb.IteratorOptions{})
 	if err != nil {
-		zap.L().Error("Bad iter", zap.Error(err))
+		log.Fatal().Err(err).Msg("Bad iter")
 	}
-	zap.L().Info("TRACE:")
+	log.Info().Msg("TRACE:")
 	for iter.Valid() {
-		bBuffer := bytes.NewBuffer(iter.Value())
-		head := zap.Any("head", ParseHeadBytes(bBuffer))
-		zap.L().Info("found:", zap.ByteString("key", iter.Key()), zap.String("value", fmt.Sprint(iter.Value())), head)
+		log.Info().Bytes("key", iter.Key()).Str("value", fmt.Sprint(iter.Value())).Msg("found")
 		iter.Next()
 	}
 	iter.Close()
@@ -64,7 +83,7 @@ func (i *Instance) InsertRowSegment(table string, col uint64, val Serial, ops *R
 	key := fmt.Sprintf("%s.%d.%s", table, col, id)
 	err := i.Db.Put([]byte(key), val.Serialize())
 	if err != nil {
-		zap.L().Error("Bad put", zap.Error(err))
+		log.Error().Err(err).Msg("Bad put")
 	}
 	return []byte(id)
 }
@@ -72,11 +91,11 @@ func (i *Instance) InsertRowSegment(table string, col uint64, val Serial, ops *R
 func (i *Instance) GetRowSegment(key []byte) (*RowSegment, error) {
 	data, err := i.Db.Get(key)
 	if err != nil {
-		zap.L().Error("Bad get", zap.Error(err))
+		log.Error().Err(err).Msg("Bad get")
 		return nil, err
 	}
-	buf := bytes.NewBuffer(data)
-	h := ParseHeadBytes(buf)
+	buf := i.Pool.newBuffer(data)
+	h := ParseHeadBytes(i.Pool, buf)
 
 	return &RowSegment{
 		Key:   ParseKeyBytes(key),
@@ -92,4 +111,62 @@ func (i *Instance) InsertTable(t *Table) error {
 	}
 
 	return nil
+}
+
+func (i *Instance) getTable(table string) (*Table, error) {
+	tb, err := i.Db.Get([]byte(table))
+	if err != nil {
+		log.Error().Err(err).Msg("Cannot get table")
+		return nil, err
+	}
+
+	t := new(Table).Deserialize(i.Pool, i.Pool.newBuffer(tb))
+	return t, nil
+}
+
+func Partial(table, col string) string {
+	return fmt.Sprint(table + "." + col)
+}
+
+func (i *Instance) columnIdxMap(table, col string) (string, error) {
+	hash := xxhash.Sum64String(Partial(table, col))
+	if i.cache.Contains(hash) {
+		d, _ := i.cache.Get(hash)
+		log.Info().Msg("cache hit finding column")
+		return Partial(table, d.Id), nil
+	}
+	t, err := i.getTable(table)
+	if err != nil {
+		log.Error().Err(err).Msg("Cannot get table")
+	}
+	num, ok := t.Map[col]
+
+	if ok {
+		str_num := strconv.Itoa(int(num))
+		i.cache.Add(hash, Cacheable{Id: str_num})
+		return Partial(table, str_num), nil
+	}
+	return "", NoColFound
+}
+
+func (i *Instance) GetColumn(table, col string) (*[][]byte, error) {
+	filter, err := i.columnIdxMap(table, col)
+	if err != nil {
+		log.Err(err).Msg("Cannot get column")
+		return nil, err
+	}
+	iter, err := i.Db.NewIterator(lotusdb.IteratorOptions{
+		Prefix: []byte(filter),
+	})
+	defer iter.Close()
+	if err != nil {
+		log.Error().Err(err).Msg("Bad iterator with prefix")
+		return nil, err
+	}
+	bs := [][]byte{}
+	for iter.Valid() {
+		bs = append(bs, iter.Value())
+		iter.Next()
+	}
+	return &bs, nil
 }

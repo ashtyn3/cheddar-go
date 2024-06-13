@@ -2,9 +2,8 @@ package cheddar
 
 import (
 	"bytes"
-	"fmt"
 
-	"go.uber.org/zap"
+	"github.com/rs/zerolog/log"
 )
 
 type Table struct {
@@ -13,14 +12,16 @@ type Table struct {
 	cap   int
 	Name  CString
 	Keyed CBool
+	pool  *pool
 }
 
-func (t *Table) New(name string, size uint16) *Table {
+func (t *Table) New(p *pool, name string, size uint16) *Table {
 
 	t.Name = CString(name)
 	t.Cols = make([]Column, size)
 	t.cap = -1
 	t.Map = make(map[string]uint16, size)
+	t.pool = p
 
 	return t
 }
@@ -28,7 +29,7 @@ func (t *Table) New(name string, size uint16) *Table {
 func (t *Table) Column(c *Column) *Table {
 	t.cap += 1
 	if t.cap >= len(t.Cols) {
-		zap.L().Fatal("Bad column number")
+		log.Fatal().Msg("Bad column number")
 	}
 	c.Index = uint16(t.cap)
 	t.Cols[t.cap] = *c
@@ -51,27 +52,28 @@ func (t *Table) Serialize() []byte {
 	return data
 }
 
-func (t *Table) Deserialize(r *bytes.Buffer) *Table {
-
-	size, _ := new(CInt64).Deserialize(r)
-	keyed, _ := new(CBool).Deserialize(r)
+func (t *Table) Deserialize(p *pool, r *bytes.Buffer) *Table {
+	t.pool = p
+	size, _ := new(CInt64).Deserialize(t.pool, r)
+	keyed, _ := new(CBool).Deserialize(t.pool, r)
 	t.Keyed = keyed
-	name, _ := new(CString).Deserialize(r)
+	name, _ := new(CString).Deserialize(t.pool, r)
 	t.Name = name
 	t.Map = make(map[string]uint16, size)
 	cols := []Column{}
-	fmt.Println(r.Bytes())
 
 	for r.Available() != 0 {
 		b, err := r.ReadBytes(byte('\n'))
 		if err != nil {
 			break
+
 		}
-		c := *new(Column).Deserialize(bytes.NewBuffer(b))
+		c := *new(Column).Deserialize(t.pool, t.pool.newBuffer(b))
 		c.Index = uint16(len(cols))
 		t.Map[string(c.Name)] = c.Index
 		cols = append(cols, c)
 	}
 	t.Cols = cols
+	t.pool.p.Put(r)
 	return t
 }

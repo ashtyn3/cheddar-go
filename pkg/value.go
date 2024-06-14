@@ -85,8 +85,8 @@ func ParseHeadBytes(p *pool, r *bytes.Buffer) Head {
 
 	k, _ := headBuffer.ReadByte()
 
-	p.p.Put(headBuffer)
 	num := binary.LittleEndian.Uint64(headBuffer.Bytes())
+	p.p.Put(headBuffer)
 	return Head{Kind: int8(k), Size: int64(num)}
 }
 func (cs *CString) Deserialize(p *pool, r *bytes.Buffer) (CString, Head) {

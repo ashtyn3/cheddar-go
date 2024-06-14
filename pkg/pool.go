@@ -20,7 +20,6 @@ func (p *pool) New() *pool {
 	return p
 }
 func (p *pool) newBuffer(data []byte) *bytes.Buffer {
-
 	b := p.p.Get().(*bytes.Buffer)
 	b.Truncate(0)
 	b.Write(data)

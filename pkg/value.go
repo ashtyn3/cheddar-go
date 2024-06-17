@@ -213,3 +213,24 @@ func T(v uint8) reflect.Type {
 	}
 	panic("unreachable")
 }
+func StrT(v string) uint8 {
+	switch v {
+	case "text":
+		{
+			return STRING
+		}
+	case "int":
+		{
+			return INT64
+		}
+	case "float":
+		{
+			return FLOAT64
+		}
+	case "bool":
+		{
+			return BOOL
+		}
+	}
+	panic("unreachable")
+}

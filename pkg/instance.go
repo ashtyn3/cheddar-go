@@ -15,7 +15,9 @@ import (
 )
 
 type Cacheable struct {
-	Id string
+	Id            string
+	TableInstance Table
+	rows          []RowSegment
 }
 
 type Instance struct {
@@ -27,6 +29,7 @@ type Instance struct {
 
 var (
 	NoColFound = errors.New("Could not find column by name")
+	InvalidCol = errors.New("Could not insert column")
 )
 
 func (i *Instance) New(p string) *Instance {
@@ -109,11 +112,24 @@ func (i *Instance) InsertTable(t *Table) error {
 	if err != nil {
 		return err
 	}
+	c_name := xxhash.Sum64([]byte("c" + t.Name))
+	if !i.cache.Contains(c_name) {
+		i.cache.Add(c_name, Cacheable{TableInstance: *t})
+	} else {
+		i.cache.Remove(c_name)
+		i.cache.Add(c_name, Cacheable{TableInstance: *t})
+	}
 
 	return nil
 }
 
 func (i *Instance) getTable(table string) (*Table, error) {
+	c_name := xxhash.Sum64([]byte("c" + table))
+
+	if i.cache.Contains(c_name) {
+		t, _ := i.cache.Get(c_name)
+		return &t.TableInstance, nil
+	}
 	tb, err := i.Db.Get([]byte(table))
 	if err != nil {
 		log.Error().Err(err).Msg("Cannot get table")
@@ -121,6 +137,9 @@ func (i *Instance) getTable(table string) (*Table, error) {
 	}
 
 	t := new(Table).Deserialize(i.Pool, i.Pool.newBuffer(tb))
+	if !i.cache.Contains(c_name) {
+		i.cache.Add(c_name, Cacheable{TableInstance: *t})
+	}
 	return t, nil
 }
 
@@ -169,4 +188,50 @@ func (i *Instance) GetColumn(table, col string) (*[][]byte, error) {
 		iter.Next()
 	}
 	return &bs, nil
+}
+
+func (i *Instance) InsertRow(table string, cols []Serial) error {
+	id := i.generateID()
+	t, err := i.getTable(table)
+	if err != nil {
+		log.Error().Err(err).Msg("Bad row insertion")
+		return err
+	}
+	for idx, d := range cols {
+		if t.Cols[idx].Kind != d.Serialize()[0] {
+			log.Error().Str("got", T(d.Serialize()[0]).String()).Str("expected", T(t.Cols[idx].Kind).String()).Msg("Mismatch column types")
+			return InvalidCol
+		}
+		i.InsertRowSegment(table, uint64(idx), d, &RowSegOptions{
+			passedId: id,
+		})
+	}
+	return nil
+}
+
+func (i *Instance) GetSegments(table string, id string) ([]RowSegment, error) {
+	t, err := i.getTable(table)
+	if err != nil {
+		log.Error().Err(err).Msg("Bad row insertion")
+		return nil, err
+	}
+	c_name := xxhash.Sum64([]byte(table + "." + id))
+	if i.cache.Contains(c_name) {
+		rs, _ := i.cache.Get(c_name)
+		return rs.rows, nil
+	}
+	rows := make([]RowSegment, len(t.Cols))
+
+	for idx := range len(t.Cols) {
+		data := fmt.Sprint(table, ".", strconv.Itoa(idx), ".", id)
+		r, err := i.GetRowSegment([]byte(data))
+		if err != nil {
+			log.Error().Err(err).Msg("Stopped building segments")
+			return nil, err
+		}
+
+		rows = append(rows, *r)
+	}
+
+	return rows, nil
 }
